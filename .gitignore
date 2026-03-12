@@ -1,0 +1,9 @@
+.env
+.python-version
+uv.lock
+
+__pycache__/
+.vscode/
+
+*.db
+example/

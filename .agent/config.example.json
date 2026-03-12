@@ -1,0 +1,19 @@
+{
+    "provider": {
+        "api_key": "your_api_key",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4/"
+    },
+
+    "agent": {
+        "model": "glm-4.5-air",
+        "workspace": "~/.agent/workspace"
+    },
+
+    "mcp_servers": {
+        "docs-langchain": {
+            "transport": "http",
+            "url": "https://docs.langchain.com/mcp"
+        }
+    }
+
+}
