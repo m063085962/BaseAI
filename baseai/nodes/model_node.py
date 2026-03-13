@@ -23,7 +23,7 @@ LLM_INPUT_PROMPT = ChatPromptTemplate.from_messages(
             "- 若用户指令模糊，主动追问以明确需求。\n"
             "- 基于已知知识提供信息，不确定或超出范围时如实告知。\n"
             "- 遇到复杂任务时，可使用spawn_subagent工具创建子代理来处理"
-            "- 如需检索记忆，可使用read_file工具查看工作区中 `memory/MEMORY.md` 文档"
+            "- 如需检索记忆，可使用read_file工具查看工作区中 MEMORY.md 文档"
             "\n\n"
             "# Runtime"
             "\n\n"

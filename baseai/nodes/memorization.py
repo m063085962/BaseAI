@@ -237,7 +237,7 @@ def memorize_messages(
     if messages_to_memorize := preprocessed_messages.messages_to_memorize:
         model = model.bind_tools([extract_memory], tool_choice="extract_memory")
 
-        memory_file = workspace / "memory" / "MEMORY.md"
+        memory_file = workspace / "MEMORY.md"
         existing_memory = ""
         if memory_file.exists():
             existing_memory = memory_file.read_text(encoding="utf-8")
