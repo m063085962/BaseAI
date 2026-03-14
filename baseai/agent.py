@@ -2,7 +2,9 @@ import asyncio
 from pathlib import Path
 from loguru import logger
 
+from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
+from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.graph import StateGraph, START, END, MessagesState
 from langgraph.prebuilt import ToolNode, tools_condition
@@ -13,6 +15,7 @@ from baseai.nodes import ModelNode, MemorizationNode, RunningMemory
 from baseai.bus import InputMessage, OutputMessage, MessageBus
 from baseai.tools.filesystem import WORKSPACE_DIR
 from baseai.tool import ToolResgistry
+from baseai.tools.spawn import spawn_subagent
 from baseai.skill import SkillsLoader
 
 
@@ -49,7 +52,8 @@ class AgentServer:
         self._register_mcp_tools()
 
         self._running = False
-        self._active_tasks: dict[str, list[asyncio.Task]] = {}
+        self._agent_tasks: list[asyncio.Task] = []
+        self._subagent_tasks: list[asyncio.Task] = []
         self._processing_lock = asyncio.Lock()
 
     def _register_mcp_tools(self) -> None:
@@ -68,7 +72,7 @@ class AgentServer:
         )
 
         tools = self.tools.get_default_tools()
-        tools.append(self._warp_subagent_tool())
+        tools.append(spawn_subagent)
 
         model_node = ModelNode(
             self.model.bind_tools(tools),
@@ -91,92 +95,6 @@ class AgentServer:
         )
         
         return graph
-    
-    def _warp_subagent_tool(self) -> BaseTool:
-        """将子代理调度功能包装为agent可调用的工具"""
-        from langchain_core.tools import tool
-        from langchain_core.runnables import RunnableConfig
-        from pydantic import BaseModel, Field
-
-        class SpawnSubagentSchema(BaseModel):
-            task_name: str = Field(description="为任务取一个简介名称")
-            task_content: str = Field(description="任务的具体内容，包括需求分析、规划和指令等详细任务指导内容")
-            skill: str  = Field(description="技能名称，只能从Available Skills中挑选, 没有则为空字符")
-            tools: list[str] = Field(description="工具名称列表，只能从Available Tools中挑选，没有则为空列表")
-
-        @tool(args_schema=SpawnSubagentSchema)
-        async def spawn_subagent(
-            task_name: str,
-            task_content: str,
-            skill: str,
-            tools: list[str],
-            config: RunnableConfig,
-        ) -> str:
-            """创建子代理任务"""
-            session = config.get("configurable").get("thread_id")
-            channel = config.get("configurable").get("channel")
-
-            try:
-                task = asyncio.create_task(self._run_subagent(
-                    task_content=task_content,
-                    skill=skill,
-                    tools=tools,
-                    channel=channel,
-                    session=session,
-                ))
-                self._active_tasks.setdefault(session, []).append(task)
-                task.add_done_callback(lambda t, k=session: t in self._active_tasks.get(k, []) and self._active_tasks[k].remove(t))
-            except Exception:
-                return f"子代理任务[{task_name}]创建失败"
-                
-            return f"子代理任务[{task_name}]创建成功"
-        
-        return spawn_subagent
-        
-    async def _run_subagent(
-        self,
-        task_content: str,
-        skill: str,
-        tools: list[str],
-        channel: str,
-        session: str,
-    ) -> None:
-        """执行子代理"""
-        from langchain.agents import create_agent
-
-        subagent = create_agent(
-            model=self.model,
-            tools=self.tools.get_with_default(tools),
-            system_prompt="你是一个任务处理专家。"
-        )
-
-        messages = []
-        if skill and (skill_content:=self.skills.get_content(skill)):
-            messages.append(("human", skill_content))
-        messages.append(("human", task_content))
-
-        try:
-            response = await subagent.ainvoke(
-                {"messages": messages},
-                config={"configurable": {"thread_id": None}},
-            )
-
-            if messages := response.get("messages"):
-                await self.bus.publish_output(
-                    OutputMessage(
-                        content=messages[-1].content,
-                        channel=channel,
-                    )
-                )
-        except asyncio.CancelledError:
-            logger.info(f"会话{session}的子代理任务被取消")
-            raise
-        except Exception:
-            logger.exception(f"会话{session}的子代理任务发生错误")
-            await self.bus.publish_output(OutputMessage(
-                    channel=channel,
-                    content="抱歉，子代理遇到了一些问题",
-            ))
 
     async def run(self) -> None:
         """Run agent server"""
@@ -192,22 +110,21 @@ class AgentServer:
             if msg.content.strip().lower() == "/stop":
                 await self._handle_stop(msg)
             else:
-                task = asyncio.create_task(self._dispatch(msg))
-                self._active_tasks.setdefault(msg.session, []).append(task)
-                task.add_done_callback(lambda t, k=msg.session: t in self._active_tasks.get(k, []) and self._active_tasks[k].remove(t))
+                await self._process_message_test(msg)
+
 
     async def _handle_stop(self, msg: InputMessage) -> None:
-        """取消所有任务和子代理"""
-        tasks = self._active_tasks.pop(msg.session, [])
-        cancelled = sum(1 for t in tasks if not t.done() and t.cancel())
-        for t in tasks:
+        """测试取消任务功能"""
+        agent_cancelled = sum(1 for t in self._agent_tasks if not t.done() and t.cancel())
+        subagent_cancelled = sum(1 for t in self._subagent_tasks if not t.done() and t.cancel())
+        for t in self._agent_tasks + self._subagent_tasks:
             try: 
                 await t
             except(asyncio.CancelledError, Exception):
                 pass
-        content = f"已停止 {cancelled} 任务" if cancelled else "没有正在运行的任务"
+        content = f"已取消 {agent_cancelled} 消息任务和 {subagent_cancelled} 子代理任务"
         await self.bus.publish_output(OutputMessage(
-            channel=msg.channel, content=content,
+            content=content, channel=msg.channel,
         ))
 
     def stop(self) -> None:
@@ -215,91 +132,132 @@ class AgentServer:
         self._running = False
         logger.info(" Agent Server 停止")
 
-    async def _dispatch(self, msg: InputMessage) -> None:
-        """使用全局锁同步处理消息"""
-        async with self._processing_lock:
-            try:
-                response = await self._process_message(msg)
-                if response and isinstance(response, OutputMessage):
-                    await self.bus.publish_output(response)
-            except asyncio.CancelledError:
-                logger.info(f"会话{msg.session}的消息任务被取消")
-                raise
-            except Exception:
-                logger.exception(f"会话{msg.session}的消息任务发生错误")
-                await self.bus.publish_output(OutputMessage(
-                    channel=msg.channel,
-                    content="抱歉，我遇到了一些问题",
-                )) 
-    
-    async def _process_message(self, msg: InputMessage) -> OutputMessage:
-        """处理消息"""
-        config = {
-            "configurable": {
-                "thread_id": msg.session,
-                "channel": msg.channel,
-                "workspace": self.workspace,
-                "restrict_to_workspace": self.restrict_to_workspace,},
-            "recursion_limit": self.recursion_limit,
-        }
-        
-        async with AsyncSqliteSaver.from_conn_string(".agent/state/state.db") as saver:
-            agent = self._build_agent(saver)
-            cmd = msg.content.strip().lower()
-            if cmd == "/help":
-                return OutputMessage(
-                    content=(
-                        "commands:\n"
-                        "/new - 重置会话\n"
-                        "/state - 获取历史状态\n"
-                        "/stop - 停止当前会话任务\n"
-                        "/exit - 退出当前会话\n"
-                        "/help - 显示可用的命令"
-                    ),
-                    channel=msg.channel,
-                )
-            elif cmd == "/state": # 获取历史状态
-                content= ""
-                if state := await agent.aget_state(config):
-                    for m in state.values.get("messages", []):
+    async def _process_message_test(self, msg: InputMessage) -> None:
+        """Process incoming message"""
+        cmd = msg.content.strip().lower()
+        if cmd == "/help":
+            await self.bus.publish_output(OutputMessage(
+                content=(
+                    "commands:\n"
+                    "/new   - 重置会话\n"
+                    "/state - 获取历史状态\n"
+                    "/stop  - 停止当前会话任务\n"
+                    "/exit  - 退出当前会话\n"
+                    "/help  - 显示可用的命令"
+                ),
+                channel=msg.channel,
+            ))
+        elif cmd == "/new":
+            async with AsyncSqliteSaver.from_conn_string(".agent/state/state.db") as saver:
+                await saver.adelete_thread(msg.session_id)
+            await self.bus.publish_output(OutputMessage(
+                content="session cleaned",
+                channel=msg.channel,
+            ))
+        elif cmd == "/state":
+            content= ""
+            async with AsyncSqliteSaver.from_conn_string(".agent/state/state.db") as saver:
+                if state := await saver.aget_tuple({"configurable":{"thread_id":msg.session_id}}):
+                    for m in state.checkpoint.get("channel_values").get("messages", []):
                         if tool_calls := getattr(m, "tool_calls", None):
                             content += f"{m.type}: tool_calls: {tool_calls}\n"
                         else:
                             content += f"{m.type}: {m.content}\n"
-                return OutputMessage(
+            await self.bus.publish_output(OutputMessage(
+                content=content,
+                channel=msg.channel,
+            ))
+        else:
+            if msg.sender == "agent":
+                task = asyncio.create_task(self._process_subagent_task(msg))
+                task.add_done_callback(lambda t: self._subagent_tasks.remove(t))
+                self._subagent_tasks.append(task)
+            else:
+                task = asyncio.create_task(self._process_agent_task(msg))
+                task.add_done_callback(lambda t: self._agent_tasks.remove(t))
+                self._agent_tasks.append(task)
+            
+    async def _process_agent_task(self, msg: InputMessage) -> None:
+        """process agent task with global lock to synchronize access to messages"""
+        async with self._processing_lock:
+            config = {
+                "configurable": {
+                    "thread_id": msg.session_id,
+                    "channel": msg.channel,
+                    "bus": self.bus,
+                    "workspace": self.workspace,
+                    "restrict_to_workspace": self.restrict_to_workspace,},
+                "recursion_limit": self.recursion_limit,
+            }
+
+            if msg.sender == "subagent":
+                messages = {"messages": [ToolMessage(content=msg.content, tool_call_id=msg.metadata.get("tool_call_id", ""))]}
+            else:
+                messages = {"messages": [HumanMessage(content=msg.content)]}
+
+            async with AsyncSqliteSaver.from_conn_string(".agent/state/state.db") as saver:
+                agent = self._build_agent(saver)
+
+                content = "错误：主代理没有返回内容"
+                try:
+                    response = await agent.ainvoke(messages, config=config,)
+                    if messages := response.get("messages"):
+                        content = messages[-1].content
+                except asyncio.CancelledError:
+                    content = f"会话{msg.session_id}消息任务被取消"
+                    logger.info(content)
+                except Exception as e:
+                    content = f"会话{msg.session_id}消息任务遇到错误: {str(e)}"
+                    logger.exception(content)
+                finally:
+                    await self.bus.publish_output(OutputMessage(
+                        content=content,
+                        channel=msg.channel,
+                    ))
+
+    async def _process_subagent_task(self, msg: InputMessage) -> None:
+        """process subagent task"""
+        tools = msg.metadata.get("tools")
+        skill = msg.metadata.get("skill")
+
+        messages = []
+        if skill and (skill_content:=self.skills.get_content(skill)):
+            messages.append(HumanMessage(content=skill_content))
+        messages.append(HumanMessage(content=msg.content))
+
+        config = {
+                "configurable": {
+                    "thread_id": msg.metadata.get("task_id", "1"),
+                    "workspace": self.workspace,
+                    "restrict_to_workspace": self.restrict_to_workspace,},
+                "recursion_limit": self.recursion_limit,
+            }
+
+        async with AsyncSqliteSaver.from_conn_string(".agent/state/state.db") as saver:
+            subagent = create_agent(
+                model=self.model,
+                tools=self.tools.get_with_default(tools),
+                system_prompt="你是一个任务处理专家。",
+                checkpointer=saver,
+            )
+
+            content = "子代理没有返回内容"
+            try:
+                response = await subagent.ainvoke(
+                    {"messages": messages},
+                    config=config,
+                )
+                if messages := response.get("messages"):
+                    content = messages[-1].content
+            except asyncio.CancelledError:
+                content = f"子代理任务{msg.session_id}被取消"
+                logger.info(content)
+            except Exception:
+                content = f"子代理任务{msg.session_id}遇到错误"
+                logger.exception(content)
+            finally:
+                await self.bus.publish_input(InputMessage(
                     content=content,
                     channel=msg.channel,
-                )
-            elif cmd == "/new":
-                await saver.adelete_thread(msg.session)
-                return OutputMessage(
-                    content="Succeed",
-                    channel=msg.channel,
-                )
-
-            message = {"messages": ("human", msg.content)}
-            response = await agent.ainvoke(message, config=config)
-            
-        return OutputMessage(
-            content=response["messages"][-1].content,
-            channel=msg.channel,
-        )
-    
-    async def process_direct(
-        self,
-        content: str,
-        session: str,
-        channel: str = "cli",
-        sender_id = "direct"
-    ) -> str:
-        """直接处理消息"""
-        response = await self._process_message(
-            InputMessage(
-                content=content,
-                session=session,
-                channel=channel,
-                sender_id=sender_id,
-            )
-        )
-
-        return response.content if response else ""
+                    session_id=msg.session_id,
+                ))

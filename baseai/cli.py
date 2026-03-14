@@ -46,7 +46,7 @@ async def client():
             await bus.publish_input(InputMessage(
                 content=user_input,
                 channel="cli",
-                session="test"
+                session_id="test"
             ))
 
     async def output_handler():
@@ -56,7 +56,7 @@ async def client():
                 response = await asyncio.wait_for(bus.consume_output(), timeout=0.5)
                 if response.channel != "cli":
                     continue
-                print(f"[Output] {response.content}")
+                print(f"[Output]\n{response.content}")
             except asyncio.TimeoutError:
                 continue
 

@@ -34,7 +34,7 @@ class ToolResgistry:
         """Get default tools"""
         return self._default_tools
     
-    def get_with_default(self, names: list[str]) -> list[BaseTool]:
+    def get_with_default(self, names: list[str] | None) -> list[BaseTool]:
         """Get specific tools with default tools"""
         tools = []
         for tool in self._default_tools:

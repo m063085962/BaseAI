@@ -1,15 +1,15 @@
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 @dataclass
 class InputMessage:
     """Message received from a chat channel"""
     content: str # message content
-    session: str # session key
     channel: str # which channel from
-    sender_id: str | None = None,
+    session_id: str # session id for the conversation
+    sender: Literal["agent", "subagent", "user"] = "user", # who the message is intended for, default to "agent"
     timestamp: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -18,7 +18,6 @@ class OutputMessage:
     """Message to send to chat channel"""
     content: str
     channel: str
-    reply_to: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
