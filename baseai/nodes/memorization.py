@@ -319,7 +319,7 @@ class MemorizationNode(RunnableCallable):
         self,
         *,
         model: BaseModel,
-        max_tokens: int = 40000,
+        max_tokens: int = 10000,
         keep_ratio: float = 0.3,
         token_counter: TokenCounter = count_tokens_approximately,
         memory_prompt: ChatPromptTemplate = MEMORY_PROMPT,

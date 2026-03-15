@@ -9,7 +9,7 @@ from langgraph.utils.runnable import RunnableCallable
 from pydantic import BaseModel
 
 from baseai.skill import SkillsLoader
-from baseai.tool import ToolResgistry
+from baseai.tools.registry import ToolResgistry
 from baseai.tools.filesystem import WORKSPACE_DIR
 
 LLM_INPUT_PROMPT = ChatPromptTemplate.from_messages(

@@ -1,6 +1,7 @@
 import uuid
+from typing import Annotated
 
-from langchain.tools import BaseTool, ToolRuntime, tool
+from langchain.tools import tool, BaseTool, InjectedToolCallId, ToolRuntime
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
 
@@ -63,7 +64,7 @@ async def spawn_subagent(
     skill: str | None,
     tools: list[str] | str | None,
     config: RunnableConfig,
-    runtime: ToolRuntime,
+    tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> str:
     """Tool for spawning a subagent"""
     if isinstance(tools, str):
@@ -80,7 +81,7 @@ async def spawn_subagent(
                 "task_id": str(uuid.uuid4()),
                 "skill": skill,
                 "tools": tools,
-                "tool_call_id": runtime.tool_call_id,
+                "tool_call_id": tool_call_id,
             }
         ))
     except Exception:

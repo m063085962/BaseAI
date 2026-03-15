@@ -13,9 +13,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from baseai.nodes import ModelNode, MemorizationNode, RunningMemory
 from baseai.bus import InputMessage, OutputMessage, MessageBus
-from baseai.tools.filesystem import WORKSPACE_DIR
-from baseai.tool import ToolResgistry
-from baseai.tools.spawn import spawn_subagent
+from baseai.tools import ToolResgistry, spawn_subagent, WORKSPACE_DIR
 from baseai.skill import SkillsLoader
 
 
@@ -29,8 +27,8 @@ class AgentServer:
         max_tokens: int | None = None,
         temperature: float | None = None,
         workspace: Path = WORKSPACE_DIR,
-        memory_window: int = 40000,
-        recursion_limit: int = 30,
+        memory_window: int = 10000,
+        recursion_limit: int = 20,
         restrict_to_workspace: bool = True,
         mcp_tools: list[BaseTool] = [],
     ):
@@ -66,11 +64,6 @@ class AgentServer:
         class AgentState(MessagesState):
             running_summary: RunningMemory
 
-        memory_node = MemorizationNode(
-            model=self.model,
-            max_tokens=self.memory_window,
-        )
-
         tools = self.tools.get_default_tools()
         tools.append(spawn_subagent)
 
@@ -78,6 +71,11 @@ class AgentServer:
             self.model.bind_tools(tools),
             skills=self.skills,
             tools=self.tools,
+        )
+
+        memory_node = MemorizationNode(
+            model=self.model,
+            max_tokens=self.memory_window,
         )
 
         graph = (
@@ -110,11 +108,11 @@ class AgentServer:
             if msg.content.strip().lower() == "/stop":
                 await self._handle_stop(msg)
             else:
-                await self._process_message_test(msg)
+                await self._process_message(msg)
 
 
     async def _handle_stop(self, msg: InputMessage) -> None:
-        """测试取消任务功能"""
+        """stop current session tasks"""
         agent_cancelled = sum(1 for t in self._agent_tasks if not t.done() and t.cancel())
         subagent_cancelled = sum(1 for t in self._subagent_tasks if not t.done() and t.cancel())
         for t in self._agent_tasks + self._subagent_tasks:
@@ -132,7 +130,7 @@ class AgentServer:
         self._running = False
         logger.info(" Agent Server 停止")
 
-    async def _process_message_test(self, msg: InputMessage) -> None:
+    async def _process_message(self, msg: InputMessage) -> None:
         """Process incoming message"""
         cmd = msg.content.strip().lower()
         if cmd == "/help":
@@ -168,18 +166,57 @@ class AgentServer:
                 channel=msg.channel,
             ))
         else:
-            if msg.sender == "agent":
-                task = asyncio.create_task(self._process_subagent_task(msg))
-                task.add_done_callback(lambda t: self._subagent_tasks.remove(t))
-                self._subagent_tasks.append(task)
+            routing_tasks = self._subagent_tasks if msg.sender == "agent" else self._agent_tasks
+            task = asyncio.create_task(self._dispatch(msg))
+            task.add_done_callback(lambda t: routing_tasks.remove(t))
+            routing_tasks.append(task)
+
+            # if msg.sender == "agent":
+            #     task = asyncio.create_task(self._process_subagent_task(msg))
+            #     task.add_done_callback(lambda t: self._subagent_tasks.remove(t))
+            #     self._subagent_tasks.append(task)
+            # else:
+            #     task = asyncio.create_task(self._process_agent_task(msg))
+            #     task.add_done_callback(lambda t: self._agent_tasks.remove(t))
+            #     self._agent_tasks.append(task)
+
+    async def _dispatch(self, msg: InputMessage) -> None:
+        """dispatch message to agent or subagent task with error handling"""
+        task_type = "子代理" if msg.sender == "agent" else "消息"
+        task_id = msg.metadata.get("task_id")
+        try:
+            if task_type == "子代理":
+                response = await self._process_subagent_task(msg)
+                if response and isinstance(response, InputMessage):
+                    await self.bus.publish_input(response)
             else:
-                task = asyncio.create_task(self._process_agent_task(msg))
-                task.add_done_callback(lambda t: self._agent_tasks.remove(t))
-                self._agent_tasks.append(task)
+                response = await self._process_agent_task(msg)
+                if response and isinstance(response, OutputMessage):
+                    await self.bus.publish_output(response)
+        except asyncio.CancelledError:
+            logger.info(f"{task_type}任务{task_id}被取消")
+            raise
+        except Exception:
+            logger.exception(f"{task_type}任务{task_id}发生错误")
+            await self.bus.publish_output(OutputMessage(
+                content="抱歉，我遇到了一些问题",
+                channel=msg.channel,
+            )) 
             
-    async def _process_agent_task(self, msg: InputMessage) -> None:
+    async def _process_agent_task(self, msg: InputMessage) -> OutputMessage:
         """process agent task with global lock to synchronize access to messages"""
+        if not msg.content:
+            return OutputMessage(
+                content="消息内容不可以为空",
+                channel=msg.channel,
+            )
+        
         async with self._processing_lock:
+            if msg.sender == "subagent":
+                message = ToolMessage(content=msg.content, tool_call_id=msg.metadata.get("tool_call_id", ""))
+            else:
+                message = HumanMessage(content=msg.content)
+
             config = {
                 "configurable": {
                     "thread_id": msg.session_id,
@@ -190,33 +227,29 @@ class AgentServer:
                 "recursion_limit": self.recursion_limit,
             }
 
-            if msg.sender == "subagent":
-                messages = {"messages": [ToolMessage(content=msg.content, tool_call_id=msg.metadata.get("tool_call_id", ""))]}
-            else:
-                messages = {"messages": [HumanMessage(content=msg.content)]}
-
+            content = "没有内容返回"
             async with AsyncSqliteSaver.from_conn_string(".agent/state/state.db") as saver:
                 agent = self._build_agent(saver)
 
-                content = "错误：主代理没有返回内容"
-                try:
-                    response = await agent.ainvoke(messages, config=config,)
-                    if messages := response.get("messages"):
-                        content = messages[-1].content
-                except asyncio.CancelledError:
-                    content = f"会话{msg.session_id}消息任务被取消"
-                    logger.info(content)
-                except Exception as e:
-                    content = f"会话{msg.session_id}消息任务遇到错误: {str(e)}"
-                    logger.exception(content)
-                finally:
-                    await self.bus.publish_output(OutputMessage(
-                        content=content,
-                        channel=msg.channel,
-                    ))
+                response = await agent.ainvoke({"messages": [message]}, config=config)
+                if messages := response.get("messages"):
+                    content = messages[-1].content
 
-    async def _process_subagent_task(self, msg: InputMessage) -> None:
+            return OutputMessage(
+                content=content,
+                channel=msg.channel,
+            )
+
+    async def _process_subagent_task(self, msg: InputMessage) -> InputMessage:
         """process subagent task"""
+        if not msg.content:
+            return InputMessage(
+                content="任务内容不可以为空",
+                channel=msg.channel,
+                session_id=msg.session_id,
+                sender="subagent",
+            )
+        
         tools = msg.metadata.get("tools")
         skill = msg.metadata.get("skill")
 
@@ -232,32 +265,29 @@ class AgentServer:
                     "restrict_to_workspace": self.restrict_to_workspace,},
                 "recursion_limit": self.recursion_limit,
             }
+        
+        agent_file = self.workspace / "AGENT.md"
+        if agent_file.exists():
+            instrution = agent_file.read_text(encoding="utf-8")
 
+        system_prompt=f"{"你是一个任务处理专家。" or instrution}\n\n- 如需检索记忆，可使用read_file工具查看工作区中 MEMORY.md 文档"
+        
+        content = "子代理没有返回内容"
         async with AsyncSqliteSaver.from_conn_string(".agent/state/state.db") as saver:
             subagent = create_agent(
                 model=self.model,
                 tools=self.tools.get_with_default(tools),
-                system_prompt="你是一个任务处理专家。",
+                system_prompt=system_prompt,
                 checkpointer=saver,
             )
 
-            content = "子代理没有返回内容"
-            try:
-                response = await subagent.ainvoke(
-                    {"messages": messages},
-                    config=config,
-                )
-                if messages := response.get("messages"):
-                    content = messages[-1].content
-            except asyncio.CancelledError:
-                content = f"子代理任务{msg.session_id}被取消"
-                logger.info(content)
-            except Exception:
-                content = f"子代理任务{msg.session_id}遇到错误"
-                logger.exception(content)
-            finally:
-                await self.bus.publish_input(InputMessage(
-                    content=content,
-                    channel=msg.channel,
-                    session_id=msg.session_id,
-                ))
+            response = await subagent.ainvoke({"messages": messages}, config=config)
+            if messages := response.get("messages"):
+                content = messages[-1].content
+
+        return InputMessage(
+            content=content,
+            channel=msg.channel,
+            session_id=msg.session_id,
+            sender="subagent",
+        )
