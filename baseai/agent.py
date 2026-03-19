@@ -14,7 +14,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from baseai.nodes import ModelNode, MemorizationNode, RunningMemory
 from baseai.bus import InputMessage, OutputMessage, MessageBus
 from baseai.tools import ToolResgistry, spawn_subagent, WORKSPACE_DIR
-from baseai.skill import SkillsLoader
+from baseai.skill import SkillsManager
 
 
 class AgentServer:
@@ -45,7 +45,7 @@ class AgentServer:
             temperature=temperature,
         )
 
-        self.skills = SkillsLoader(workspace / "skills")
+        self.skills = SkillsManager(workspace / "skills")
         self.tools = ToolResgistry()
         self._register_mcp_tools()
 
@@ -170,15 +170,6 @@ class AgentServer:
             task = asyncio.create_task(self._dispatch(msg))
             task.add_done_callback(lambda t: routing_tasks.remove(t))
             routing_tasks.append(task)
-
-            # if msg.sender == "agent":
-            #     task = asyncio.create_task(self._process_subagent_task(msg))
-            #     task.add_done_callback(lambda t: self._subagent_tasks.remove(t))
-            #     self._subagent_tasks.append(task)
-            # else:
-            #     task = asyncio.create_task(self._process_agent_task(msg))
-            #     task.add_done_callback(lambda t: self._agent_tasks.remove(t))
-            #     self._agent_tasks.append(task)
 
     async def _dispatch(self, msg: InputMessage) -> None:
         """dispatch message to agent or subagent task with error handling"""

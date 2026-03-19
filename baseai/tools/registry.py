@@ -46,7 +46,7 @@ class ToolResgistry:
         
         return tools
     
-    def get_tools_summary(self) -> str:
+    def get_summary(self) -> str:
         """Get a summary of extend tools including name and description"""
         tools = []
         for tool in self._extend_tools.values():

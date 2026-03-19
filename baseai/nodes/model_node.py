@@ -8,7 +8,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.utils.runnable import RunnableCallable
 from pydantic import BaseModel
 
-from baseai.skill import SkillsLoader
+from baseai.skill import SkillsManager
 from baseai.tools.registry import ToolResgistry
 from baseai.tools.filesystem import WORKSPACE_DIR
 
@@ -50,7 +50,7 @@ class ModelNode(RunnableCallable):
         self,
         model: LanguageModelLike,
         *,
-        skills: SkillsLoader,
+        skills: SkillsManager,
         tools: ToolResgistry,
         messages_key: str = "messages",
         name: str = "model",
@@ -88,8 +88,8 @@ class ModelNode(RunnableCallable):
             {
                 "agent_instruction": agent_instruction,
                 "workspace": workspace,
-                "skills": self.skills.get_skills_summary(),
-                "tools": self.tools.get_tools_summary(),
+                "skills": self.skills.get_summary(),
+                "tools": self.tools.get_summary(),
                 "summary": summary,
                 "messages": messages,
             }
