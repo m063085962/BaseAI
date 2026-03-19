@@ -6,14 +6,10 @@ from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
 
-WORKSPACE_DIR = Path(".agent/workspace").resolve()
-
-def _resolve_path(
-    path: str,
-    workspace: Path | None,
-    restrict: bool = True,
-) -> Path:
+def resolve_path(path: str, config: RunnableConfig,) -> Path:
     """根据工作区解析路径（如果是相对路径），并检查路径限制"""
+    workspace = config.get("configurable").get("workspace")
+    restrict = config.get("configurable").get("restrict_to_workspace", True)
     p = Path(path).expanduser()
     if not p.is_absolute() and workspace:
         p = workspace / p
@@ -32,10 +28,8 @@ class ListDirSchema(BaseModel):
 @tool(args_schema=ListDirSchema)
 def list_dir(path: str, config: RunnableConfig) -> str:
     """列出指定目录下的内容"""
-    workspace = config.get("configurable").get("workspace", WORKSPACE_DIR)
-    restrict = config.get("configurable").get("restrict_to_workspace", True)
     try:
-        dir_path = _resolve_path(path, workspace, restrict)
+        dir_path = resolve_path(path, config)
         if not dir_path.exists():
             return f"Error: 未找到目录：{path}"
         if not dir_path.is_dir():
@@ -62,10 +56,8 @@ class ReadFileSchema(BaseModel):
 @tool(args_schema=ReadFileSchema)
 def read_file(path: str, config: RunnableConfig) -> str:
     """读取指定文件的内容"""
-    workspace = config.get("configurable").get("workspace", WORKSPACE_DIR)
-    restrict = config.get("configurable").get("restrict_to_workspace", True)
     try:
-        file_path = _resolve_path(path, workspace, restrict)
+        file_path = resolve_path(path, config)
         if not file_path.exists():
             return f"Error: 未找到文件: {path}"
         if not file_path.is_file():
@@ -90,10 +82,8 @@ def write_file(
     config: RunnableConfig
 ) -> str:
     """将内容写入指定文件"""
-    workspace = config.get("configurable").get("workspace", WORKSPACE_DIR)
-    restrict = config.get("configurable").get("restrict_to_workspace", True)
     try:
-        file_path = _resolve_path(path, workspace, restrict)
+        file_path = resolve_path(path, config)
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(content, encoding="utf-8")
         return f"成功写入 {len(content)} bytes 到文件{path}"
@@ -116,10 +106,8 @@ def edit_file(
     config: RunnableConfig
 ) -> str:
     """通过将旧文本替换为新文本来编辑指定文件。旧文本必须在文件中完全匹配"""
-    workspace = config.get("configurable").get("workspace", WORKSPACE_DIR)
-    restrict = config.get("configurable").get("restrict_to_workspace", True)
     try:
-        file_path = _resolve_path(path, workspace, restrict)
+        file_path = resolve_path(path, config)
         if not file_path.exists():
             return f"Error: 未找到文件：{path}"
 

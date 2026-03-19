@@ -17,8 +17,6 @@ from langgraph.utils.runnable import RunnableCallable
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
 
-from baseai.tools.filesystem import WORKSPACE_DIR
-
 TokenCounter = Callable[[Iterable[MessageLikeRepresentation]], int]
 
 @dataclass
@@ -217,7 +215,7 @@ def extract_memory(summary: str, memories: str) -> None:
 def memorize_messages(
     messages: list[AnyMessage],
     *,
-    workspace: Path,
+    workspace: Path | None,
     running_memory: RunningMemory | None,
     model: BaseChatModel,
     max_tokens: int = 4096,
@@ -226,6 +224,9 @@ def memorize_messages(
     memory_prompt: ChatPromptTemplate = MEMORY_PROMPT,
 ) -> RunningMemory:
     """Condense the context while extracting long-term memory from the session."""
+    if not workspace:
+        raise ValueError("workspace路径未提供")
+    
     preprocessed_messages = _preprocess_messages(
         messages=messages,
         running_memory=running_memory,
@@ -266,7 +267,7 @@ def memorize_messages(
 async def amemorize_messages(
     messages: list[AnyMessage],
     *,
-    workspace: Path,
+    workspace: Path | None,
     running_memory: RunningMemory | None,
     model: BaseChatModel,
     max_tokens: int = 4096,
@@ -274,6 +275,8 @@ async def amemorize_messages(
     token_counter: TokenCounter = count_tokens_approximately,
     memory_prompt: ChatPromptTemplate = MEMORY_PROMPT,
 ) -> RunningMemory:
+    if not workspace:
+        raise ValueError("workspace路径未提供")
 
     preprocessed_messages = _preprocess_messages(
         messages=messages,
@@ -356,7 +359,7 @@ class MemorizationNode(RunnableCallable):
         messages, running_memory = self._parse_input(input)
         running_memory = memorize_messages(
             messages,
-            workspace=config.get("configurable", {}).get("workspace", WORKSPACE_DIR),
+            workspace=config.get("configurable", {}).get("workspace"),
             running_memory=running_memory,
             model=self.model,
             max_tokens=self.max_tokens,
@@ -370,7 +373,7 @@ class MemorizationNode(RunnableCallable):
         messages, running_memory = self._parse_input(input)
         running_memory = await amemorize_messages(
             messages,
-            workspace=config.get("configurable", {}).get("workspace", WORKSPACE_DIR),
+            workspace=config.get("configurable", {}).get("workspace"),
             running_memory=running_memory,
             model=self.model,
             max_tokens=self.max_tokens,

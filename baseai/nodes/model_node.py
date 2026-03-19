@@ -10,7 +10,6 @@ from pydantic import BaseModel
 
 from baseai.skill import SkillsManager
 from baseai.tools.registry import ToolResgistry
-from baseai.tools.filesystem import WORKSPACE_DIR
 
 LLM_INPUT_PROMPT = ChatPromptTemplate.from_messages(
     [
@@ -75,7 +74,7 @@ class ModelNode(RunnableCallable):
         if running_memory and (messages := messages[running_memory.index:]):
             return []
         
-        workspace = config.get("configurable").get("workspace", WORKSPACE_DIR)
+        workspace = config.get("configurable").get("workspace")
         
         agent_file = workspace / "AGENT.md"
         agent_instruction = "You are a helpful AI Assistant."
