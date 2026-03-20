@@ -13,7 +13,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from baseai.nodes import ModelNode, MemorizationNode, RunningMemory
 from baseai.bus import InputMessage, OutputMessage, MessageBus
-from baseai.tools import ToolResgistry, spawn_subagent, WORKSPACE_DIR
+from baseai.tools import ToolResgistry, spawn_subagent
 from baseai.skill import SkillsManager
 
 
@@ -26,7 +26,7 @@ class AgentServer:
         provider: str = "openai",
         max_tokens: int | None = None,
         temperature: float | None = None,
-        workspace: Path = WORKSPACE_DIR,
+        workspace: Path = Path(".agent/workspace"),
         memory_window: int = 10000,
         recursion_limit: int = 20,
         restrict_to_workspace: bool = True,
@@ -45,7 +45,7 @@ class AgentServer:
             temperature=temperature,
         )
 
-        self.skills = SkillsManager(workspace / "skills")
+        self.skills = SkillsManager(Path(".agent/skills"))
         self.tools = ToolResgistry()
         self._register_mcp_tools()
 
@@ -174,7 +174,7 @@ class AgentServer:
     async def _dispatch(self, msg: InputMessage) -> None:
         """dispatch message to agent or subagent task with error handling"""
         task_type = "子代理" if msg.sender == "agent" else "消息"
-        task_id = msg.metadata.get("task_id")
+        task_id = msg.metadata.get("task_id", "")
         try:
             if task_type == "子代理":
                 response = await self._process_subagent_task(msg)
@@ -192,7 +192,8 @@ class AgentServer:
             await self.bus.publish_output(OutputMessage(
                 content="抱歉，我遇到了一些问题",
                 channel=msg.channel,
-            )) 
+            ))
+            raise
             
     async def _process_agent_task(self, msg: InputMessage) -> OutputMessage:
         """process agent task with global lock to synchronize access to messages"""

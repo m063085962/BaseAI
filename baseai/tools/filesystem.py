@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 def resolve_path(path: str, config: RunnableConfig,) -> Path:
     """根据工作区解析路径（如果是相对路径），并检查路径限制"""
-    workspace = config.get("configurable").get("workspace")
+    workspace: Path = config.get("configurable").get("workspace")
     restrict = config.get("configurable").get("restrict_to_workspace", True)
     p = Path(path).expanduser()
     if not p.is_absolute() and workspace:

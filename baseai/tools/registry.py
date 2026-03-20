@@ -1,6 +1,7 @@
 from langchain_core.tools import BaseTool
 
-from baseai.tools import filesystem_tools
+from baseai.tools.filesystem import filesystem_tools
+from baseai.tools.shell import run_shell
 
 class ToolResgistry:
     """Registry for agent tools"""
@@ -13,6 +14,7 @@ class ToolResgistry:
     def _register_dafault_tools(self) -> None:
         for tool in filesystem_tools:
             self._default_tools.append(tool)
+        self._default_tools.append(run_shell)
 
     def register(self, tool: BaseTool) -> None:
         """Register a tool"""
