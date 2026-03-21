@@ -45,7 +45,7 @@ class AgentServer:
             temperature=temperature,
         )
 
-        self.skills = SkillsManager(Path(".agent/skills"))
+        self.skills = SkillsManager(workspace / "skills")
         self.tools = ToolResgistry()
         self._register_mcp_tools()
 

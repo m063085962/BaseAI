@@ -1,7 +1,7 @@
 [project]
 name = "baseai"
 version = "0.0.2"
-description = "A simple personal AI assistant"
+description = "Learning and exploring AI agent"
 readme = "README.md"
 requires-python = ">=3.13"
 
