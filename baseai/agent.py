@@ -13,8 +13,9 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from baseai.nodes import ModelNode, MemorizationNode, RunningMemory
 from baseai.bus import InputMessage, OutputMessage, MessageBus
-from baseai.tools import ToolResgistry, spawn_subagent
+from baseai.tools import ToolResgistry, spawn_subagent, cron
 from baseai.skill import SkillsManager
+from baseai.cron import CronJob, CronService
 
 
 class AgentServer:
@@ -45,6 +46,7 @@ class AgentServer:
             temperature=temperature,
         )
 
+        self.cron_service = CronService(Path(".agent/cron.json"),on_job=self._cron_callback)
         self.skills = SkillsManager(workspace / "skills")
         self.tools = ToolResgistry()
         self._register_mcp_tools()
@@ -66,6 +68,7 @@ class AgentServer:
 
         tools = self.tools.get_default_tools()
         tools.append(spawn_subagent)
+        tools.append(cron)
 
         model_node = ModelNode(
             self.model.bind_tools(tools),
@@ -98,6 +101,7 @@ class AgentServer:
         """Run agent server"""
         self._running = True
         logger.info(" Agent Server 启动")
+        await self.cron_service.start()
         
         while self._running:
             try:
@@ -127,6 +131,7 @@ class AgentServer:
 
     def stop(self) -> None:
         """Stop agent server"""
+        self.cron_service.stop()
         self._running = False
         logger.info(" Agent Server 停止")
 
@@ -214,6 +219,7 @@ class AgentServer:
                     "thread_id": msg.session_id,
                     "channel": msg.channel,
                     "bus": self.bus,
+                    "cron_service": self.cron_service,
                     "workspace": self.workspace,
                     "restrict_to_workspace": self.restrict_to_workspace,},
                 "recursion_limit": self.recursion_limit,
@@ -283,3 +289,12 @@ class AgentServer:
             session_id=msg.session_id,
             sender="subagent",
         )
+    
+    async def _cron_callback(self, job: CronJob) -> None:
+        """callback for cron job"""
+        await self._process_message(InputMessage(
+            content=job.payload.message,
+            channel=job.payload.channel,
+            session_id=job.payload.to,
+            sender="cron",
+        ))
